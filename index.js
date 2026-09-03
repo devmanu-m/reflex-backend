@@ -6,12 +6,22 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const http = require('http');
+const { Server } = require('socket.io');
 
 // Create the Express app — this is your actual backend program
 const app = express();
-app.use(cors());           // allows your frontend (different address) to call this backend
-app.use(express.json());   // automatically parses incoming JSON into req.body
 
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: '*'
+  }
+});
+
+app.use(cors());
+app.use(express.json());
 // Set up a connection pool to PostgreSQL, using the values from .env
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -165,6 +175,7 @@ io.emit('statusUpdated', updatedDelivery);
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+
+server.listen(PORT, () => {
   console.log(`Reflex backend listening on port ${PORT}`);
 });
