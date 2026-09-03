@@ -66,7 +66,7 @@ app.post('/deliveries', async (req, res) => {
        VALUES ($1, 'requested', 'Delivery request created')`,
       [newDelivery.id]
     );
-
+io.emit('statusUpdated', newDelivery);
     res.status(201).json(newDelivery);
   } catch (err) {
     console.error(err);
@@ -156,7 +156,7 @@ app.patch('/deliveries/:id/status', async (req, res) => {
        VALUES ($1, $2, $3, $4)`,
       [updatedDelivery.id, status, changed_by_user_id || null, note || null]
     );
-
+io.emit('statusUpdated', updatedDelivery);
     res.json(updatedDelivery);
   } catch (err) {
     console.error(err);
