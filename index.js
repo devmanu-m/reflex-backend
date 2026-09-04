@@ -11,15 +11,19 @@ const { Server } = require('socket.io');
 
 // Create the Express app — this is your actual backend program
 const app = express();
-app.use(cors());           // allows your frontend (different address) to call this backend
-app.use(express.json());   // automatically parses incoming JSON into req.body
 
-// Wrap Express with a raw HTTP server, and attach Socket.io to that —
-// Socket.io cannot attach directly to the Express app, it needs this layer underneath.
+// Create HTTP server so Express and Socket.IO can run together
 const server = http.createServer(app);
+
+// Create the Socket.IO server
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: {
+    origin: '*'
+  }
 });
+
+app.use(cors());
+app.use(express.json());
 
 // Set up a connection pool to PostgreSQL, using the values from .env
 const pool = new Pool({
@@ -39,49 +43,87 @@ app.get('/', (req, res) => {
 app.get('/test-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
-    res.json({ message: 'Database connected', time: result.rows[0] });
+    res.json({
+      message: 'Database connected',
+      time: result.rows[0]
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Database connection failed' });
+    res.status(500).json({
+      error: 'Database connection failed'
+    });
   }
 });
 
 // CREATE a new delivery request — retailer staff use this
 app.post('/deliveries', async (req, res) => {
-  const { retailer_id, customer_name, customer_phone, address, item_description } = req.body;
+  const {
+    retailer_id,
+    customer_name,
+    customer_phone,
+    address,
+    item_description
+  } = req.body;
 
   // Basic validation — refuse the request if anything required is missing
-  if (!retailer_id || !customer_name || !customer_phone || !address || !item_description) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (
+    !retailer_id ||
+    !customer_name ||
+    !customer_phone ||
+    !address ||
+    !item_description
+  ) {
+    return res.status(400).json({
+      error: 'Missing required fields'
+    });
   }
 
-  // Generate a unique QR token for this delivery — this is what gets printed and scanned later
+  // Generate a unique QR token for this delivery
   const qr_token = require('crypto').randomUUID();
 
   try {
     const result = await pool.query(
       `INSERT INTO delivery_requests
-        (retailer_id, customer_name, customer_phone, address, item_description, status, qr_token)
+        (
+          retailer_id,
+          customer_name,
+          customer_phone,
+          address,
+          item_description,
+          status,
+          qr_token
+        )
        VALUES ($1, $2, $3, $4, $5, 'requested', $6)
        RETURNING *`,
-      [retailer_id, customer_name, customer_phone, address, item_description, qr_token]
+      [
+        retailer_id,
+        customer_name,
+        customer_phone,
+        address,
+        item_description,
+        qr_token
+      ]
     );
 
     const newDelivery = result.rows[0];
 
-    // Log this as the very first status event — every delivery starts with a "requested" event
+    // Log this as the very first status event
     await pool.query(
-      `INSERT INTO status_events (delivery_id, status, note)
+      `INSERT INTO status_events
+        (delivery_id, status, note)
        VALUES ($1, 'requested', 'Delivery request created')`,
       [newDelivery.id]
     );
 
+    // Broadcast the newly created delivery to all connected clients
     io.emit('statusUpdated', newDelivery);
 
     res.status(201).json(newDelivery);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to create delivery request' });
+    res.status(500).json({
+      error: 'Failed to create delivery request'
+    });
   }
 });
 
@@ -91,61 +133,91 @@ app.get('/deliveries', async (req, res) => {
     const result = await pool.query(
       `SELECT * FROM delivery_requests ORDER BY created_at DESC`
     );
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to fetch deliveries' });
+    res.status(500).json({
+      error: 'Failed to fetch deliveries'
+    });
   }
 });
 
 // ASSIGN a rider to a delivery — the dispatcher uses this
 app.patch('/deliveries/:id/assign', async (req, res) => {
-  const { id } = req.params;        // the delivery's ID, from the URL itself
-  const { rider_id } = req.body;    // which rider to assign, from the request body
+  const { id } = req.params;
+  const { rider_id } = req.body;
 
   if (!rider_id) {
-    return res.status(400).json({ error: 'rider_id is required' });
+    return res.status(400).json({
+      error: 'rider_id is required'
+    });
   }
 
   try {
     const result = await pool.query(
       `UPDATE delivery_requests
-       SET assigned_rider_id = $1, status = 'assigned'
+       SET assigned_rider_id = $1,
+           status = 'assigned'
        WHERE id = $2
        RETURNING *`,
       [rider_id, id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Delivery not found' });
+      return res.status(404).json({
+        error: 'Delivery not found'
+      });
     }
 
     const updatedDelivery = result.rows[0];
 
     // Log this assignment as a new status event
     await pool.query(
-      `INSERT INTO status_events (delivery_id, status, changed_by_user_id, note)
+      `INSERT INTO status_events
+        (
+          delivery_id,
+          status,
+          changed_by_user_id,
+          note
+        )
        VALUES ($1, 'assigned', NULL, 'Rider assigned by dispatcher')`,
       [updatedDelivery.id]
     );
 
+    // Broadcast the assignment update to all connected clients
     io.emit('statusUpdated', updatedDelivery);
 
     res.json(updatedDelivery);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to assign rider' });
+    res.status(500).json({
+      error: 'Failed to assign rider'
+    });
   }
 });
 
 // UPDATE a delivery's status — used by both QR scans (pickup and delivery), and cancellation
 app.patch('/deliveries/:id/status', async (req, res) => {
   const { id } = req.params;
-  const { status, changed_by_user_id, note } = req.body;
+  const {
+    status,
+    changed_by_user_id,
+    note
+  } = req.body;
 
-  const validStatuses = ['requested', 'assigned', 'picked_up', 'delivered', 'cancelled'];
+  const validStatuses = [
+    'requested',
+    'assigned',
+    'picked_up',
+    'delivered',
+    'cancelled'
+  ];
+
   if (!status || !validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Invalid or missing status' });
+    return res.status(400).json({
+      error: 'Invalid or missing status'
+    });
   }
 
   try {
@@ -158,30 +230,47 @@ app.patch('/deliveries/:id/status', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Delivery not found' });
+      return res.status(404).json({
+        error: 'Delivery not found'
+      });
     }
 
     const updatedDelivery = result.rows[0];
 
-    // Log this status change as its own permanent event — never overwritten
+    // Log this status change as its own permanent event
     await pool.query(
-      `INSERT INTO status_events (delivery_id, status, changed_by_user_id, note)
+      `INSERT INTO status_events
+        (
+          delivery_id,
+          status,
+          changed_by_user_id,
+          note
+        )
        VALUES ($1, $2, $3, $4)`,
-      [updatedDelivery.id, status, changed_by_user_id || null, note || null]
+      [
+        updatedDelivery.id,
+        status,
+        changed_by_user_id || null,
+        note || null
+      ]
     );
 
+    // Broadcast the status update to all connected clients
     io.emit('statusUpdated', updatedDelivery);
 
     res.json(updatedDelivery);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to update status' });
+    res.status(500).json({
+      error: 'Failed to update status'
+    });
   }
 });
 
-// IMPORTANT: use server.listen, not app.listen — this is what actually makes
-// Socket.io work. app.listen would start Express alone, without Socket.io attached.
+// Port configuration
 const PORT = process.env.PORT || 5000;
+
+// Start the HTTP + Express + Socket.IO server
 server.listen(PORT, () => {
   console.log(`Reflex backend listening on port ${PORT}`);
 });
