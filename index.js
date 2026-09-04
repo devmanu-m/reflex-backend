@@ -6,11 +6,20 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const http = require('http');
+const { Server } = require('socket.io');
 
 // Create the Express app — this is your actual backend program
 const app = express();
 app.use(cors());           // allows your frontend (different address) to call this backend
 app.use(express.json());   // automatically parses incoming JSON into req.body
+
+// Wrap Express with a raw HTTP server, and attach Socket.io to that —
+// Socket.io cannot attach directly to the Express app, it needs this layer underneath.
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: '*' }
+});
 
 // Set up a connection pool to PostgreSQL, using the values from .env
 const pool = new Pool({
@@ -66,7 +75,9 @@ app.post('/deliveries', async (req, res) => {
        VALUES ($1, 'requested', 'Delivery request created')`,
       [newDelivery.id]
     );
-io.emit('statusUpdated', newDelivery);
+
+    io.emit('statusUpdated', newDelivery);
+
     res.status(201).json(newDelivery);
   } catch (err) {
     console.error(err);
@@ -118,6 +129,8 @@ app.patch('/deliveries/:id/assign', async (req, res) => {
       [updatedDelivery.id]
     );
 
+    io.emit('statusUpdated', updatedDelivery);
+
     res.json(updatedDelivery);
   } catch (err) {
     console.error(err);
@@ -125,7 +138,7 @@ app.patch('/deliveries/:id/assign', async (req, res) => {
   }
 });
 
-// UPDATE a delivery's status — used by both QR scans (pickup and delivery)
+// UPDATE a delivery's status — used by both QR scans (pickup and delivery), and cancellation
 app.patch('/deliveries/:id/status', async (req, res) => {
   const { id } = req.params;
   const { status, changed_by_user_id, note } = req.body;
@@ -156,7 +169,9 @@ app.patch('/deliveries/:id/status', async (req, res) => {
        VALUES ($1, $2, $3, $4)`,
       [updatedDelivery.id, status, changed_by_user_id || null, note || null]
     );
-io.emit('statusUpdated', updatedDelivery);
+
+    io.emit('statusUpdated', updatedDelivery);
+
     res.json(updatedDelivery);
   } catch (err) {
     console.error(err);
@@ -164,7 +179,9 @@ io.emit('statusUpdated', updatedDelivery);
   }
 });
 
+// IMPORTANT: use server.listen, not app.listen — this is what actually makes
+// Socket.io work. app.listen would start Express alone, without Socket.io attached.
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Reflex backend listening on port ${PORT}`);
 });
